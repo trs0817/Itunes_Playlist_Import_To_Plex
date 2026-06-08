@@ -30,6 +30,29 @@ class PlexImportUtility(tk.Tk):
         self.m3u_lb = None
         self.folder_text = None
         self.plex_playlist_lb = None
+        self.status_console = None
+        self.login_style = None
+        self.login_frame = None
+        self.username_default_text = None
+        self.user_name = None
+        self.password_default_text = None
+        self.password = None
+        self.ip_timer = None
+        self.ip_timer_default_text = None
+        self.direct_connect_style = None
+        self.direct_connect_frame = None
+        self.IP_default_text = None
+        self.IP_address = None
+        self.token_default_text = None
+        self.token = None
+        self.playlist_frame = None
+        self.top = None
+        self.label = None
+        self.progress = None
+
+
+
+
 
         self.m3u_folder = get_itunes_media_folder()
         print(f"iTunes/Apple Music media folder: {self.m3u_folder}")
@@ -159,7 +182,7 @@ class PlexImportUtility(tk.Tk):
         self.direct_connect_frame = ttk.Frame(self.login_page, relief='solid', borderwidth=2, style='Blue.TFrame', padding=(5, 5))
         self.direct_connect_frame.grid(row=2, column=0, padx=5, pady=0, sticky='new')
 
-        tk.Label(self.direct_connect_frame, text='Method 2: Connet to the Plex server using hard coded IP address and token', bg='lightblue').grid(row=0, column=0,
+        tk.Label(self.direct_connect_frame, text='Method 2: Connect to the Plex server using hard coded IP address and token', bg='lightblue').grid(row=0, column=0,
                                                                                                         pady=(0, 10),
                                                                                                         sticky='w',
                                                                                                         columnspan=2)
@@ -190,6 +213,7 @@ class PlexImportUtility(tk.Tk):
             columnspan=1)
         return
 
+    @staticmethod
     def validate_digits(self, value):
         return value.isdigit() or value == ""
 
@@ -201,8 +225,8 @@ class PlexImportUtility(tk.Tk):
         ttk.Label(self.info_frame, text='Server Information:').grid(row=0, column=0, sticky='w')
         ttk.Label(self.info_frame, text="Attribute:").grid(row=1, column=0, sticky='w')
         ttk.Label(self.info_frame, text="Value:").grid(row=1, column=1, sticky='w')
-        self.attribute_listbox = tk.Listbox(self.info_frame, selectmode=tk.NONE, width=30, height=10)
-        self.value_listbox = tk.Listbox(self.info_frame, selectmode=tk.NONE, width=50, height=10)
+        self.attribute_listbox = tk.Listbox(self.info_frame, selectmode=tk.NONE, width=30, height=8)
+        self.value_listbox = tk.Listbox(self.info_frame, selectmode=tk.NONE, width=50, height=8)
         self.attribute_listbox.grid(row=2, column=0, padx=(0, 0), pady=(0, 0), sticky='w')
         self.value_listbox.grid(row=2, column=1, padx=(5, 0), pady=(0, 0), sticky='w')
         return
@@ -220,11 +244,11 @@ class PlexImportUtility(tk.Tk):
         ttk.Label(library_frame, text="Key:").grid(row=1, column=3, sticky='w')
         ttk.Label(library_frame, text="Item Count:").grid(row=1, column=4, sticky='w')
 
-        self.library_org_lb = tk.Listbox(library_frame, selectmode=tk.NONE, width=30, height=10)
-        self.library_type_lb = tk.Listbox(library_frame, selectmode=tk.NONE, width=20, height=10)
-        self.library_id_lb = tk.Listbox(library_frame, selectmode=tk.NONE, width=30, height=10)
-        self.library_key_lb = tk.Listbox(library_frame, selectmode=tk.NONE, width=20, height=10)
-        self.library_count_lb = tk.Listbox(library_frame, selectmode=tk.NONE, width=20, height=10)
+        self.library_org_lb = tk.Listbox(library_frame, selectmode=tk.NONE, width=30, height=7)
+        self.library_type_lb = tk.Listbox(library_frame, selectmode=tk.NONE, width=20, height=7)
+        self.library_id_lb = tk.Listbox(library_frame, selectmode=tk.NONE, width=30, height=7)
+        self.library_key_lb = tk.Listbox(library_frame, selectmode=tk.NONE, width=20, height=7)
+        self.library_count_lb = tk.Listbox(library_frame, selectmode=tk.NONE, width=20, height=7)
 
         self.library_org_lb.grid(row=2, column=0, sticky='w', padx=(0, 5), pady=(0, 10))
         self.library_type_lb.grid(row=2, column=1, sticky='w', padx=(0, 5), pady=(0, 10))
@@ -237,7 +261,7 @@ class PlexImportUtility(tk.Tk):
         photo_count_button.grid(row=3, column=4, columnspan=1, sticky='w', pady=(0, 10))
         return
 
-    # THis page contains the playlist import logic, a list of M3U files, a list of playlists on the plex server
+    # This page contains the playlist import logic, a list of M3U files, a list of playlists on the plex server
     def create_import_frame(self):
         # This is the second page of the notebook which lists the m3u files in the specified folder and then allows you to select which ones to import
         import_frame = ttk.Frame(self.import_page, padding=(5, 5))
@@ -325,7 +349,7 @@ class PlexImportUtility(tk.Tk):
             initialize_screen_data(self, plex_info, library_info)
             return
 
-    def music_database_create_MB(self):
+    def music_database_create_mb(self):
         result = messagebox.askokcancel("Confirm", "Create Music Database?")
         if result:
             self.post_to_status_console("Music database creation confirmed", "info")
@@ -344,7 +368,7 @@ class PlexImportUtility(tk.Tk):
 
         # Progress bar
         self.progress = ttk.Progressbar(self.top, mode=mode)
-        self.progress.pack(padx=20, pady=10, fill=tk.X)
+        self.progress.pack(padx=20, pady=10, fill="x")
         if mode == "indeterminate":
             self.progress.start(100)
         self.top.update()
@@ -366,6 +390,9 @@ class PlexImportUtility(tk.Tk):
         self.token_default_text.set(token)
         return
 
+    def update_ip(self, ip):
+        self.IP_default_text.set(ip)
+        return
 #   CLASS DEFINITION ENDS HERE
 
 # this is the main startup process.  Stay here until a successful login and then update the info and playlist screens

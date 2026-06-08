@@ -194,6 +194,7 @@ def import_playlist_to_plex(app, playlist, working_directory):
     target_library = "Music"
     library_id = ""
     library_name = ""
+    machine_id = ""
     library_count = 0
     plex_info, section_info = get_plex_information(app, False)
     for item in plex_info:

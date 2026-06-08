@@ -18,7 +18,7 @@ def save_music_database(app, libray_name, library_id, song_count, output_file_pa
         app.post_to_status_console(f"Plex music database {file_name} already exists, not refreshed.", "info")
         return database_name
     else:
-        result = app.music_database_create_MB()
+        result = app.music_database_create_mb()
         if not result:
             return False
 
@@ -49,7 +49,8 @@ def save_music_database(app, libray_name, library_id, song_count, output_file_pa
                 path = path[position:]          # get rid of the redundant path info to save file space
                 track_data = path.split("/")
 
-                output_string = "{}:::{}:::{}:::{}\n".format(key, track_data[0].lower(), track_data[1].lower(), track_data[2].lower())    # Using ::: as a delimiter to avoid any issues with a colon being in the information                                                                                                                                          # Plex does some wierd things with capitalization so moving everything to lower case to make the match easie
+                output_string = "{}:::{}:::{}:::{}\n".format(key, track_data[0].lower(), track_data[1].lower(), track_data[2].lower())    # Using ::: as a delimiter to avoid any issues with a colon being in the information
+                                                                                                                                                # Plex does some weird things with capitalization so moving everything to lower case to make the match easier
                 output_playlist.write(output_string)
                 index = index + 1
             track_count_start = track_count_start + number_of_tracks_to_get
@@ -97,7 +98,6 @@ def find_playlist_keys(app, m3u_playlist, music_database, working_directory):
             file_content = file.read().splitlines()
     except FileNotFoundError:
         print(f"Error: The file '{m3u_playlist}' was not found.")
-        exit(501)
         return False
     except Exception as e:
         print(f"An error occurred: {e}")
@@ -120,7 +120,7 @@ def find_playlist_keys(app, m3u_playlist, music_database, working_directory):
         if length < 3:
             continue
 
-        playlist_item = {'Artist': music_item[length-3].lower(), 'Album': music_item[length-2].lower(), 'Track': music_item[length-1].lower()}      # Plex does some wierd things with capitalization so moving everything to lower case to make the match easier
+        playlist_item = {'Artist': music_item[length-3].lower(), 'Album': music_item[length-2].lower(), 'Track': music_item[length-1].lower()}      # Plex does some weird things with capitalization so moving everything to lower case to make the match easier
         playlist_database.append(playlist_item)
 
     # Now match the playlist item to the music database item and return a list of keys
