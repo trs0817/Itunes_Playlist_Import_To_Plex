@@ -85,3 +85,7 @@ dmypy.json
 Thumbs.db
 
 /Readme/
+/dist/
+/build/
+main.spec
+

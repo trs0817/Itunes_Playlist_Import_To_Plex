@@ -36,7 +36,7 @@ This program was built and tested on a Windows 11 PC and assumes you have the la
 
 ## Author
 
-Robert Suffern - robert.suffern@ultimation.tech
+Robert Suffern - @rcsuffern (X)
 
 
 ## Version History
