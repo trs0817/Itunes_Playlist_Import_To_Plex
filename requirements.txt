@@ -1,0 +1,7 @@
+# Runtime dependencies
+requests>=2.32.4
+plexapi>=4.15.0
+xmltodict>=0.13.0
+
+# Build-only
+pyinstaller>=6.0.0

@@ -1,0 +1,5 @@
+# Development / build-time dependencies (not needed at runtime)
+pytest>=8.0.0
+responses>=0.25.0
+Pillow>=10.0.0
+pyinstaller>=6.0.0

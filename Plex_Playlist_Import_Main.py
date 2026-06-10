@@ -5,9 +5,12 @@
 # LICENSE file in the root directory of this source tree.
 
 import API_Calls
+from API_Calls import PlexConnectionError
 import Music_Database_Import
-from functools import lru_cache
 import globals
+from tkinter import messagebox
+import logging
+logger = logging.getLogger(__name__)
 
 #-----------------------  LOCAL FUNCTIONS
 # pass JSON dictionary of playlist and search for a song ID
@@ -67,7 +70,7 @@ def library_regression(app, directory_list):
             item_metadata = API_Calls.get_item_metadata(item)['MediaContainer']
             #print(json.dumps(item_metadata, indent=4))
             photo_count += count_photos_in_metadata(item_metadata)
-            print(photo_count)
+            logger.debug("Photo count: %s", photo_count)
             app.update_indeterminate_progressbar()
             next_directory_list = get_directories_in_metadata(item_metadata)
             if next_directory_list:
@@ -78,7 +81,6 @@ def library_regression(app, directory_list):
                     #exit('Running away....')
         return photo_count
 
-@lru_cache(maxsize=128)
 def get_photo_library_count(app, key):
     global photo_count          # we need to make this global so the regression loop can access it
 
@@ -102,7 +104,6 @@ def get_photo_library_count(app, key):
     """
     return photo_count
 
-@lru_cache(maxsize=2)
 def get_plex_information(app, count_photos):
     plex_info_list = []
     section_list = []
@@ -114,7 +115,7 @@ def get_plex_information(app, count_photos):
     plex_info_list.append(('Version', plex.platformVersion))
     plex_info_list.append(('IP Address', globals.PLEX_IP_ADDRESS))
     plex_info_list.append(('Port', globals.PLEX_PORT))
-    plex_info_list.append(('Token', globals.PLEX_TOKEN))
+    plex_info_list.append(('Token', '****'))
 
 
     #--------- Create a list of all library sections for later use
@@ -141,29 +142,28 @@ def get_plex_information(app, count_photos):
 
 # DELETE PLAYLIST(S) ON THE PLEX SERVER
 def delete_plex_playlists(app):        # Get the M3U playlists selected by the user
-    selected_playlists = []
     selected_indices = app.plex_playlist_lb.curselection()
-    if selected_indices:
-        selected_playlists = [app.plex_playlist_lb.get(i) for i in selected_indices]
-        # print(f"Selected files: {selected_playlists}")
-    else:
-        print("No files selected.")
-        app.post_to_status_console(f"No files selected.", "error")
+    if not selected_indices:
+        app.post_to_status_console("No playlists selected.", "error")
         return
-    # Get playlist keys
-    playlist_key = ""
-    plex_playlists = API_Calls.get_playlists()
+    selected_playlists = [app.plex_playlist_lb.get(i) for i in selected_indices]
 
+    names = "\n".join(f"  \u2022 {p}" for p in selected_playlists)
+    if not messagebox.askyesno(
+            "Delete Playlists",
+            f"Delete the following playlist(s) from Plex?\n\n{names}"):
+        app.post_to_status_console("Delete cancelled.", "info")
+        return
+
+    plex_playlists = API_Calls.get_playlists()
     for delete_playlist in selected_playlists:
-        print(f"Deleting playlist: {delete_playlist}")
         app.post_to_status_console(f"Deleting playlist: {delete_playlist}", "info")
         for plex_playlist in plex_playlists:
-            title = plex_playlist["title"]
-            if title == delete_playlist:
-                playlist_key = plex_playlist["ratingKey"]
-                API_Calls.delete_playlist(playlist_key)
+            if plex_playlist["title"] == delete_playlist:
+                API_Calls.delete_playlist(plex_playlist["ratingKey"])
+                break
 
-    app.display_plex_playlists()                # Update the plex playlist listbox to reflect any newly added playlists
+    app.display_plex_playlists()
     return
 
 # PLAYLIST IMPORT TO PLEX SERVER
@@ -174,13 +174,17 @@ def get_playlists_to_import(app, working_directory):        # Get the M3U playli
         selected_playlists = [app.m3u_lb.get(i) for i in selected_indices]
         # print(f"Selected files: {selected_playlists}")
     else:
-        print("No files selected.")
+        logger.warning("No files selected")
         app.post_to_status_console(f"No files selected.", "error")
         return
     for playlist in selected_playlists:
-        print(f"Processing playlist: {playlist}")
+        logger.info("Processing playlist: %s", playlist)
         app.post_to_status_console(f"Processing playlist: {playlist}", "info")
-        playlist_count, song_count = import_playlist_to_plex(app, playlist, working_directory)
+        try:
+            playlist_count, song_count = import_playlist_to_plex(app, playlist, working_directory)
+        except PlexConnectionError as e:
+            app.post_to_status_console(f"Connection error importing {playlist}: {e}", "error")
+            continue
         if song_count == 0:
             app.post_to_status_console(f"Playlist {playlist} not processed.", "error")
         else:
@@ -191,7 +195,11 @@ def get_playlists_to_import(app, working_directory):        # Get the M3U playli
 
 def import_playlist_to_plex(app, playlist, working_directory):
     # Get the plex information on the target playlist
-    target_library = "Music"
+    target_library = app.selected_library.get() if app.selected_library else ""
+    if not target_library:
+        app.post_to_status_console(
+            "No music library selected — use the Target Music Library dropdown on the Import tab.", "error")
+        return 0, 0
     library_id = ""
     library_name = ""
     machine_id = ""
@@ -208,19 +216,19 @@ def import_playlist_to_plex(app, playlist, working_directory):
             library_count = section['Count']
             break
     if library_id == "" or library_name == "":
-        print("Target library:Music not found")
-        app.post_to_status_console(f"Target library:Music not found", "error")
-        return 0,0
+        app.post_to_status_console(
+            f"Music library '{target_library}' not found on server.", "error")
+        return 0, 0
     # We now have the machine_id, library key and library name which are all used for the API calls
 
 #------- Download the Plex music database to a local file.  Only do so if the file does not exist
-    database_file = Music_Database_Import.save_music_database(app, library_name, library_id, library_count, working_directory)
+    database_file = Music_Database_Import.save_music_database(app, library_name, library_id, library_count)
     if not database_file:
         return 0,0
 #------- Now find the Plex song key for each song in the new playlist
     playlist_keys = Music_Database_Import.find_playlist_keys(app, playlist, database_file, working_directory)
     if len(playlist_keys) == 0:
-        print("No songs found in playlist")
+        logger.warning("No songs found in playlist")
         app.post_to_status_console(f"No songs found in playlist {playlist}", "error")
         return 0,0
 
@@ -228,15 +236,15 @@ def import_playlist_to_plex(app, playlist, working_directory):
     playlists= API_Calls.get_playlists()
     for plex_playlist in playlists:
         title = plex_playlist["title"]
-        if title == playlist.replace(".m3u", ""):
+        if title == playlist.replace(".m3u", "").replace(".m3u8", ""):
             playlist_key = plex_playlist["ratingKey"]
             break
 
     if playlist_key != "":
         delete_flag = API_Calls.delete_playlist(playlist_key)
-        print('Plex playlist ' + str(playlist.replace('.m3u', '')) + ' deleted')
+        logger.info("Deleted existing Plex playlist: %s", playlist.replace('.m3u8', '').replace('.m3u', ''))
         app.post_to_status_console(f"Plex playlist {playlist.replace('.m3u', '')} deleted on the Plex server", "info")
-    new_playlist = API_Calls.create_playlist(machine_id, playlist.replace(".m3u", ""), library_id)
+    new_playlist = API_Calls.create_playlist(machine_id, playlist.replace(".m3u", "").replace(".m3u8", ""), library_id)
     new_playlist_key = new_playlist['MediaContainer']['Metadata'][0]['ratingKey']
     app.post_to_status_console(f"Plex playlist {playlist.replace('.m3u', '')} created on the Plex server.  Sending the song list.", "info")
     playlist_count, import_count= API_Calls.add_songs_to_Plex_playlist(machine_id, new_playlist_key, playlist_keys)
@@ -245,10 +253,37 @@ def import_playlist_to_plex(app, playlist, working_directory):
     return playlist_count, import_count
 
 def display_missing_songs(app, playlist_key, playlist_keys):
-    print("Some songs not accepted by Plex.  Finding out which ones were not accepted.")
+    logger.warning("Some songs were not accepted by Plex")
     playlist_contents = API_Calls.get_playlist_contents(playlist_key)
     playlist_contents = playlist_contents['MediaContainer']['Metadata']
     for song in playlist_contents:
         if song['ratingKey'] not in playlist_keys:
             app.post_to_status_console(f"{song['title']} + not accepted by Plex", "error")
     return
+
+
+def rebuild_plex_database(app):
+    """Delete the existing music database and rebuild it from the Plex server.
+    Run this from a background thread via Screen_Manager._run_in_thread()."""
+    db_path = Music_Database_Import.DB_PATH
+    if db_path.exists():
+        db_path.unlink()
+        app.post_to_status_console(f"Existing database deleted.", "info")
+
+    target_library = app.selected_library.get() if app.selected_library else ""
+    if not target_library:
+        app.post_to_status_console(
+            "No music library selected — use the Target Music Library dropdown on the Import tab.", "error")
+        return
+
+    if globals.PLEX_IP_ADDRESS == "":
+        app.post_to_status_console("Not connected to Plex. Please log in first.", "error")
+        return
+
+    plex_info, section_info = get_plex_information(app, False)
+    for section in section_info:
+        if section['Title'] == target_library:
+            Music_Database_Import.save_music_database(
+                app, section['Title'], section['Key'], section['Count'])
+            return
+    app.post_to_status_console(f"Music library '{target_library}' not found on server.", "error")

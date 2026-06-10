@@ -8,11 +8,13 @@ import requests
 import uuid
 import xml.etree.ElementTree as ET  # For XML parsing, as a fallback
 import globals
+import logging
+logger = logging.getLogger(__name__)
 
 # Step 1: Authenticate with Plex.tv to get the auth token
 def get_plex_token(user, pw, id):
 
-    print(id)
+    logger.debug("Content type id: %s", id)
 
     plex_tv_headers = {
         'X-Plex-Product': 'iTunes Playlist Import',
@@ -36,13 +38,12 @@ def get_plex_token(user, pw, id):
 def plex_login(app, username, password):
 
     success = False
-    print("Attempting server info access")
+    logger.info("Attempting server info access")
     app.post_to_status_console("Contacting Plex.tv", "info")
     if username == "" or password == "":
-        print("Username and password are required.")
+        logger.warning("Username and password are required")
         app.post_to_status_console("Username and password are required.", "error")
         return success
-    print(f"Attempting login with username: {username} and password: {password}")
 
     client_id = str(uuid.uuid4())  # Or hardcode a persistent one
     try:
@@ -53,7 +54,6 @@ def plex_login(app, username, password):
         else:
             app.post_to_status_console(
                 "Server access token received from Plex.tv.  Adding it to Method 2 as a convenience.", "info")
-            print(f"Auth token: {globals.PLEX_TOKEN}")
             app.update_token(globals.PLEX_TOKEN)        # Enter the received token into the Method 2 section as a convenience
 
     except Exception as e:
@@ -74,11 +74,11 @@ def plex_login(app, username, password):
     try:
         response = requests.get(plex_server_info_url, headers=headers)
         response.raise_for_status()  # Check for HTTP errors
-        print(f"Response Status Code: {response.status_code}")
+        logger.debug("Response status: %s", response.status_code)
         #print(response.text)
 
         content_type = response.headers.get('Content-Type', '').lower()
-        print(f"Content Type: {content_type}")
+        logger.debug("Content type: %s", content_type)
 
         if 'json' in content_type:
             # If it's JSON, parse it
@@ -88,23 +88,23 @@ def plex_login(app, username, password):
             local_addresses = []
             for server in servers:
                 local_addresses.append(server.get("address"))
-                print(f"Local Address: {server.get('address')}")
+                logger.info("Local address: %s", server.get('address'))
 
         else:  # If not reporting json
-            print(f"Unexpected content type: {content_type}. Response content: {response.text[:200]}")  # Print first 200 chars for debugging
+            logger.warning("Unexpected content type: %s", content_type)  # Response content omitted (may contain token)
             app.post_to_status_console("Unexpected Plex.tv content type.  Check credentials and try again or, attempt Method 2 below.", "error")
             return False
 
     except requests.exceptions.HTTPError as err:  # Exception handling blocks
-        print(f"HTTP Error occurred: {err} (Status Code: {response.status_code})")
-        print(f"Response content: {response.text[:200]}")
+        logger.error("HTTP error: %s (status %s)", err, response.status_code)
+        logger.debug("Response snippet: %s", response.text[:200])
         return False# Helpful for debugging
     except requests.exceptions.JSONDecodeError as err:
-        print(f"JSON Decode Error: {err}. The response might not be JSON.")
-        print(f"Response content: {response.text[:200]}")
+        logger.error("JSON decode error: %s", err)
+        logger.debug("Response snippet: %s", response.text[:200])
         return False
     except requests.exceptions.RequestException as err:
-        print(f"Request Error: {err}")
+        logger.error("Request error: %s", err)
         app.post_to_status_console(f"Request Error: {err}", "error")
         return False
 
@@ -116,30 +116,29 @@ def plex_login(app, username, password):
     app.post_to_status_console(f"Plex.tv reports {len(local_addresses)} local IP Addresses", "info")
 
     for ip in local_addresses:
-        print('Attempting IP address: ', ip)
+        logger.info("Attempting IP address: %s", ip)
         app.post_to_status_console(f"Attempting to connect to Plex server at {ip}", "info")
-        url = f'http://{ip}:{globals.PLEX_PORT}/library/?X-Plex-Token={globals.PLEX_TOKEN}'
-        print(url)
+        url = f'http://{ip}:{globals.PLEX_PORT}/library/'
+        scan_headers = {'X-Plex-Token': globals.PLEX_TOKEN, 'Accept': 'application/json'}
 
         try:
-            response = requests.get(url, timeout=float(app.ip_timer.get()) / 1000)  # request fails at timeout = .3 seconds.  Using double that to start
+            response = requests.get(url, headers=scan_headers, timeout=float(app.ip_timer.get()) / 1000)
             if response.status_code == 200:
-                print(f"Plex response at  {ip} is: {response.text}")
+                logger.debug("Plex response at %s: status %s", ip, response.status_code)
                 success = True
                 break
             else:
-                print(f"Plex at {ip} failed. Status code: {response.status_code}")
+                logger.warning("Plex at %s failed, status %s", ip, response.status_code)
 
         except requests.exceptions.RequestException as e:
-            print(f"Request Error for IP {ip}: {e}")
+            logger.warning("Request error for IP %s: %s", ip, e)
             app.post_to_status_console(f"Server not found", "error")
 
     if success:
-        print(f"Plex server found at {ip} with token {globals.PLEX_TOKEN}!")
         globals.PLEX_IP_ADDRESS = ip
         app.update_ip(ip)
     else:
-        print("No Plex server found at the private ip addresses provided by Plex.tv")
+        logger.warning("No Plex server found at any private IP address from Plex.tv")
     return success
 
 # check to see if the server responds using the user inputted ip address and token
@@ -147,19 +146,17 @@ def ip_login(app, ip, token):
     try:
         app.post_to_status_console(f"Attempting to connect to Plex server at {ip}", "info")
 
-        url = f'http://{ip}:{globals.PLEX_PORT}/library/?X-Plex-Token={token}'
-        print(url)
-
-        response = requests.get(f'http://{ip}:{globals.PLEX_PORT}/library/?X-Plex-Token={token}',
-                                timeout=1)  # request fails at timeout = .3 seconds.  Using double that to start
+        url = f'http://{ip}:{globals.PLEX_PORT}/library/'
+        ip_headers = {'X-Plex-Token': token, 'Accept': 'application/json'}
+        response = requests.get(url, headers=ip_headers, timeout=1)
         if response.status_code == 200:
-            print(f"Plex response at  {ip} is: {response.text}")
+            logger.debug("Plex response at %s: status %s", ip, response.status_code)
             success = True
         else:
-            print(f"Plex at {ip} failed. Status code: {response.status_code}")
+            logger.warning("Plex at %s failed, status %s", ip, response.status_code)
             return False
     except requests.exceptions.RequestException as e:
-        print(f"Request Error for IP {ip}: {e}")
+        logger.warning("Request error for IP %s: %s", ip, e)
         return False
 
     globals.PLEX_IP_ADDRESS = ip

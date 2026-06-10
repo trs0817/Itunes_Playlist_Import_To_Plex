@@ -4,140 +4,205 @@
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
 
-import API_Calls
 import os
+from pathlib import Path
+
+import API_Calls
+from API_Calls import PlexConnectionError
+
+# Fixed storage location: %LOCALAPPDATA%\iTunesToPlex\Plex Music Database.txt
+_APP_DIR = Path(os.getenv("LOCALAPPDATA", "")) / "iTunesToPlex"
+if not str(_APP_DIR).strip("/\\"):
+    # LOCALAPPDATA not set (non-Windows fallback)
+    _APP_DIR = Path.home() / "AppData" / "Local" / "iTunesToPlex"
+
+DB_PATH = _APP_DIR / "Plex Music Database.txt"
 
 
-def save_music_database(app, libray_name, library_id, song_count, output_file_path):
+def _ensure_app_dir():
+    _APP_DIR.mkdir(parents=True, exist_ok=True)
 
-    file_name = "Plex Music Database.txt"
-    database_name = output_file_path / file_name
 
-    if os.path.isfile(str(database_name)):               # Don't create a new database file if one already exists
-        print(str(database_name) + " already exists, not refreshed.")
-        app.post_to_status_console(f"Plex music database {file_name} already exists, not refreshed.", "info")
-        return database_name
-    else:
-        result = app.music_database_create_mb()
-        if not result:
-            return False
+def _open_m3u(path):
+    """Open a .m3u or .m3u8 file, trying UTF-8-sig (handles BOM), then cp1252
+    (iTunes Windows export encoding), then UTF-8 with error replacement."""
+    for enc in ('utf-8-sig', 'cp1252'):
+        try:
+            with open(str(path), 'rt', encoding=enc) as f:
+                return f.read().splitlines()
+        except UnicodeDecodeError:
+            continue
+    with open(str(path), 'rt', encoding='utf-8', errors='replace') as f:
+        return f.read().splitlines()
 
-        app.post_to_status_console(f"Creating music database {file_name}", "info")
-        app.create_progressbar("Creating the Music Database", "determinate")
-        output_playlist = open(database_name, 'wt', encoding='utf-8')
 
-    # ------- To save space remove everything in the path except artist, album, title.  To do that, find the position of the last byte of the redundant data
+def save_music_database(app, libray_name, library_id, song_count, output_file_path=None):
+    """Build the Plex music database at %LOCALAPPDATA%\\iTunesToPlex\\Plex Music Database.txt.
 
-        track_info = API_Calls.get_track_data(library_id, 0, 1)  # Get the first track to record the path to the music
-        track_info = track_info[0]
-        path = track_info['Media'][0]['Part'][0]['file']
-        position = path.find(libray_name + "/") + len(libray_name) + 1
-        common_path = path[0:position]
-        output_playlist.write("The Plex path for Music is: " + common_path + "\n")      # ---- Output to the first line of the database file
+    Writes to a .tmp file and os.replace()s on success so an interrupted build
+    never leaves a partial file that looks complete.  output_file_path is kept
+    for backward-compatibility but is ignored — the path is always DB_PATH.
+    """
+    _ensure_app_dir()
 
-    # ----------  Loop through the entire library saving the ratingKey, and the song file path less the common element to all paths
-        track_count_start = 0
-        number_of_tracks_to_get = 100
-        index = number_of_tracks_to_get
-        while index == number_of_tracks_to_get:
-            print(track_count_start)
-            index = 0
-            track_info = API_Calls.get_track_data(library_id, track_count_start, number_of_tracks_to_get)       # Returns the list of tracks in JSON format
-            for track in track_info:
-                key = track['ratingKey']
-                path = track['Media'][0]['Part'][0]['file']
-                path = path[position:]          # get rid of the redundant path info to save file space
-                track_data = path.split("/")
+    if os.path.isfile(str(DB_PATH)):
+        app.post_to_status_console(
+            f"Music database already exists at {DB_PATH}, not refreshed.", "info")
+        return DB_PATH
 
-                output_string = "{}:::{}:::{}:::{}\n".format(key, track_data[0].lower(), track_data[1].lower(), track_data[2].lower())    # Using ::: as a delimiter to avoid any issues with a colon being in the information
-                                                                                                                                                # Plex does some weird things with capitalization so moving everything to lower case to make the match easier
-                output_playlist.write(output_string)
-                index = index + 1
-            track_count_start = track_count_start + number_of_tracks_to_get
-            percent_done = (track_count_start / song_count) * 100
-            app.update_progressbar(percent_done)
+    tmp_path = DB_PATH.with_suffix('.tmp')
+    app.post_to_status_console(f"Creating music database at {DB_PATH}", "info")
+    app.create_progressbar("Creating the Music Database", "determinate")
 
-        output_playlist.close()
-        app.post_to_status_console(f"Plex music database {file_name} created.", "success")
+    try:
+        with open(str(tmp_path), 'wt', encoding='utf-8') as out:
+            # Fetch the first track to derive the common path prefix
+            first_batch = API_Calls.get_track_data(library_id, 0, 1)
+            if not first_batch:
+                app.post_to_status_console("No tracks found in Music library.", "error")
+                app.close_progressbar()
+                return None
+
+            first_track = first_batch[0]
+            first_path = first_track['Media'][0]['Part'][0]['file']
+            position = first_path.find(libray_name + "/") + len(libray_name) + 1
+            common_path = first_path[:position]
+            out.write("The Plex path for Music is: " + common_path + "\n")
+
+            track_count_start = 0
+            batch_size = 100
+            tracks_written = 0
+            index = batch_size   # prime the loop
+
+            while index == batch_size:
+                batch = API_Calls.get_track_data(library_id, track_count_start, batch_size)
+                index = len(batch)   # loop continues only while API returns a full batch
+                for track in batch:
+                    try:
+                        key = track['ratingKey']
+                        file_path = track['Media'][0]['Part'][0]['file']
+                        relative = file_path[position:]
+                        parts = relative.split("/")
+                        depth = len(parts)
+                        if depth >= 3:
+                            artist, album, title = parts[-3].lower(), parts[-2].lower(), parts[-1].lower()
+                        elif depth == 2:
+                            # artist/track.flac — no album subfolder
+                            artist, album, title = parts[-2].lower(), "", parts[-1].lower()
+                        else:
+                            app.post_to_status_console(
+                                f"Skipping track — unrecognisable path: {relative}", "warning")
+                            continue
+                        out.write("{}:::{}:::{}:::{}\n".format(key, artist, album, title))
+                        tracks_written += 1
+                    except (IndexError, KeyError) as e:
+                        app.post_to_status_console(
+                            f"Skipping track with missing metadata ({e})", "warning")
+
+                track_count_start += batch_size
+                if song_count > 0:
+                    pct = min((track_count_start / song_count) * 100, 100)
+                    app.update_progressbar(pct)
+
+        # Atomic rename — only reached on full success
+        os.replace(str(tmp_path), str(DB_PATH))
+        app.post_to_status_console(
+            f"Music database created — {tracks_written} tracks written.", "success")
+
+    except Exception as e:
+        # Clean up temp file so a future run starts fresh
+        try:
+            if tmp_path.exists():
+                tmp_path.unlink()
+        except OSError:
+            pass
+        app.post_to_status_console(f"Database build failed: {e}", "error")
         app.close_progressbar()
+        raise
 
-        #track_info = track_info.json()
-        #print(json.dumps(track_info, indent=4))
-        return database_name
+    app.close_progressbar()
+    return DB_PATH
 
 
-#-------------------  Create a list of database track keys from the list of songs in the playlist
 def find_playlist_keys(app, m3u_playlist, music_database, working_directory):
+    """Match tracks in an m3u/m3u8 playlist against the Plex music database.
 
-    # Move the Plex music database into RAM for speed and create a list of dictionaries that contain the track info
-    music_database = working_directory / music_database
+    music_database  — absolute Path (returned by save_music_database / DB_PATH)
+    working_directory — folder containing the m3u file
+    """
+    db_path = Path(music_database)
     try:
-        with open(str(music_database), 'r', encoding='utf-8') as file:
-            file_content = file.read().splitlines()
+        with open(str(db_path), 'r', encoding='utf-8') as f:
+            db_lines = f.read().splitlines()
     except FileNotFoundError:
-        print(f"Error: The file '{music_database}' was not found.")
-        exit(500)
+        raise PlexConnectionError(f"Music database not found: '{db_path}'")
     except Exception as e:
-        print(f"An error occurred: {e}")
-        return False
+        app.post_to_status_console(f"Error reading database: {e}", "error")
+        return []
 
-    file_content.pop(0)         # skip first line
+    if db_lines:
+        db_lines.pop(0)   # strip header line
 
-    music_database = []
-    music_item = {}
+    # Build lookup dict: (artist, album, track) -> ratingKey
+    # dict.setdefault keeps the FIRST entry on duplicates, preserving prior behaviour.
+    music_db = {}
+    bad_db_lines = 0
+    for line in db_lines:
+        parts = line.split(":::")
+        if len(parts) < 4:
+            bad_db_lines += 1
+            continue
+        try:
+            key = int(parts[0])
+        except ValueError:
+            bad_db_lines += 1
+            continue
+        music_db.setdefault((parts[1], parts[2], parts[3]), key)
+    if bad_db_lines:
+        app.post_to_status_console(
+            f"Skipped {bad_db_lines} malformed line(s) in music database.", "warning")
 
-    for music_line in file_content:
-        music_list = music_line.split(":::")
-        music_item = {'Key': int(music_list[0]), 'Artist': music_list[1], 'Album': music_list[2], "Track": music_list[3]}
-        music_database.append(music_item)
-
-    # Move the new playlist info into RAM for speed and create a list of dictionaries that contain the track info
-    m3u_playlist = working_directory / m3u_playlist
+    # Load the m3u/m3u8 playlist with encoding fallback
+    m3u_path = working_directory / m3u_playlist
     try:
-        with open(str(m3u_playlist), 'rt', encoding='utf-8') as file:
-            file_content = file.read().splitlines()
+        m3u_lines = _open_m3u(m3u_path)
     except FileNotFoundError:
-        print(f"Error: The file '{m3u_playlist}' was not found.")
-        return False
+        app.post_to_status_console(f"Playlist file not found: '{m3u_path}'", "error")
+        return []
     except Exception as e:
-        print(f"An error occurred: {e}")
-        return False
+        app.post_to_status_console(f"Error reading playlist: {e}", "error")
+        return []
 
-    playlist_database = []
-    playlist_item = {}
-
-    for music_line in file_content:
-        if music_line == "#EXTM3U":
+    playlist_db = []
+    for line in m3u_lines:
+        if not line or line.startswith("#"):
             continue
-        if music_line[0:7] == "#EXTINF":
+        # Try backslash split (Windows paths), fall back to forward slash
+        parts = line.split("\\")
+        if len(parts) < 3:
+            parts = line.split("/")
+        if len(parts) < 3:
             continue
-        music_item = music_line.split("\\")
-        length = len(music_item)
-        if length < 3:
-            music_item = music_line.split("/")
-            length = len(music_item)
-        #print(length)
-        if length < 3:
-            continue
+        playlist_db.append({
+            'Artist': parts[-3].lower(),
+            'Album': parts[-2].lower(),
+            'Track': parts[-1].lower(),
+        })
 
-        playlist_item = {'Artist': music_item[length-3].lower(), 'Album': music_item[length-2].lower(), 'Track': music_item[length-1].lower()}      # Plex does some weird things with capitalization so moving everything to lower case to make the match easier
-        playlist_database.append(playlist_item)
-
-    # Now match the playlist item to the music database item and return a list of keys
+    # O(1) lookup per playlist track
     key_list = []
-    found = False
-    for playlist_track in playlist_database:
+    for playlist_track in playlist_db:
+        lookup_key = (playlist_track['Artist'], playlist_track['Album'], playlist_track['Track'])
+        rating_key = music_db.get(lookup_key)
+        if rating_key is not None:
+            key_list.append(rating_key)
+        else:
+            app.post_to_status_console(
+                f"Not found — Track: {playlist_track['Track']}  "
+                f"Album: {playlist_track['Album']}  "
+                f"Artist: {playlist_track['Artist']}", "warning")
 
-        for track in music_database:
-            if track['Track'] == playlist_track['Track']:
-                if track['Album'] == playlist_track['Album']:
-                    if track['Artist'] == playlist_track['Artist']:         # if all three attributes are an exact match then the song has been found
-                        key_list.append(track['Key'])
-                        #print('Track Found')
-                        found = True
-        if found == False:
-            print(f"Track = {playlist_track['Track']} Album = {playlist_track['Album']} Artist = {playlist_track['Artist']} was not found.")
-            app.post_to_status_console(f"Track = {playlist_track['Track']} Album = {playlist_track['Album']} Artist = {playlist_track['Artist']} was not found on Plex server.", "error")
-        found = False
-    app.post_to_status_console(f"Of the {len(playlist_database)} songs in playlist {m3u_playlist}, {len(key_list)} were found on the Plex server.", "info")
+    app.post_to_status_console(
+        f"Of the {len(playlist_db)} tracks in the playlist, "
+        f"{len(key_list)} were found on the Plex server.", "info")
     return key_list

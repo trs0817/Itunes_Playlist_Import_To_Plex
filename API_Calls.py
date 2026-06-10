@@ -5,248 +5,227 @@
 # LICENSE file in the root directory of this source tree.
 
 import requests
+import urllib.parse
 import xmltodict
 from plexapi.server import PlexServer
 import globals
+import logging
+logger = logging.getLogger(__name__)
+
+
+class PlexConnectionError(Exception):
+    """Raised when a Plex server connection fails unrecoverably."""
+
+
+class PlexAPIError(PlexConnectionError):
+    """Raised when a Plex API HTTP call fails."""
+
+
+# Module-level session and default timeout shared by all API calls.
+_SESSION = requests.Session()
+_DEFAULT_TIMEOUT = 10  # seconds
+
+
+def _request(method, url, **kwargs):
+    """Central HTTP helper: adds a default timeout, calls raise_for_status(),
+    and converts any requests exception into PlexAPIError."""
+    kwargs.setdefault('timeout', _DEFAULT_TIMEOUT)
+    try:
+        response = _SESSION.request(method, url, **kwargs)
+        response.raise_for_status()
+        return response
+    except requests.exceptions.HTTPError as e:
+        raise PlexAPIError(
+            f"Plex API error {e.response.status_code} ({e.response.reason}) for {url}"
+        ) from e
+    except requests.exceptions.RequestException as e:
+        raise PlexAPIError(f"Plex request failed: {e}") from e
+
 
 def get_globals():
     baseurl = f'http://{globals.PLEX_IP_ADDRESS}:{globals.PLEX_PORT}'
     token = globals.PLEX_TOKEN
     headers = {
         'X-Plex-Token': globals.PLEX_TOKEN,
-        'Accept': 'application/json'  # This header tells Plex to return JSON
+        'Accept': 'application/json'
     }
     return baseurl, token, headers
 
 
 def connect_plex():
-
-    # Assuming 'baseurl' is your Plex Media Server URL
-    # and 'token' is your authentication token
-
     baseurl, token, headers = get_globals()
-    print(f"Connecting to Plex Server: {baseurl} with token: {token}...")
     try:
-        plex = PlexServer(baseurl, token)  # Corrected argument name
-        print("Plex server is responding")
+        plex = PlexServer(baseurl, token)
+        logger.info("Plex server is responding")
         return plex
-    except TypeError as e:
-        print(f"Error connecting to Plex: {e}")
-        exit('Plex Server Not Responding')
+    except Exception as e:
+        raise PlexConnectionError(f'Plex Server Not Responding: {e}') from e
 
 
 #-------- Get a particular attribute of the Plex Server
 def get_plex_attribute(identifier):
     baseurl, token, headers = get_globals()
-    response = requests.get(baseurl, headers=headers)
+    response = _request('GET', baseurl, headers=headers)
     data = response.json()
-    #print(json.dumps(data, indent=4))
-    #print(data)
-    attribute=data['MediaContainer'][identifier]
+    attribute = data['MediaContainer'][identifier]
     return attribute
 
-#---------- Get and return a list of the Libray Sections
+
+#---------- Get and return a list of the Library Sections
 def get_library_sections():
     baseurl, token, headers = get_globals()
-    api_info = "/library/sections/"
-    url = baseurl + api_info
-    response = requests.get(url, headers=headers)
-
-    # Pretty-print the JSON data
-    data = response.json()
-    #print(json.dumps(data, indent=4))
-
-    return data
+    url = baseurl + "/library/sections/"
+    response = _request('GET', url, headers=headers)
+    return response.json()
 
 
 #------- Get List of Playlists
 def get_playlists():
     baseurl, token, headers = get_globals()
-    api_info ="/playlists?playlistType=audio"
-    url = baseurl + api_info
+    url = baseurl + "/playlists?playlistType=audio"
     try:
-        response = requests.get(url, headers=headers)
-        response.raise_for_status()                         # If there was an HTTP error, this will raise the HTTP exceptions that follow
-        # Pretty-print the JSON data
+        response = _request('GET', url, headers=headers)
         data = response.json()
-        #print(json.dumps(data, indent=4))
-        if data["MediaContainer"]["size"] == 0:             # Check to make sure there are playlists in the library
+        if data["MediaContainer"]["size"] == 0:
             return []
-        data = data["MediaContainer"]["Metadata"]
-        return data
-    except requests.exceptions.HTTPError as e:
-        if e.response.status_code == 401:
-            print("Plex API Error - Unauthorized")
-        elif e.response.status_code == 403:
-            print("Plex API Error -Forbidden")
-        elif e.response.status_code == 404:
-            print("Plex API Error -Not found")
-        else:
-            print(f"Plex API Error - HTTP error: {e.response.status_code}")
-
-    except requests.exceptions.RequestException as e:       # This except will trigger if the request fails for any other reason (bad URL)
-        print(f"Plex API Error - URL Request Invalid or Failed: {e}")
-
-    return []
-
+        return data["MediaContainer"]["Metadata"]
+    except PlexAPIError as e:
+        logger.error("Plex API error fetching playlists: %s", e)
+        return []
 
 
 #-------- Get Specific Playlist
-
 def get_playlist_metadata(identifier):
     baseurl, token, headers = get_globals()
-    api_info = "/playlists/" + identifier + "?checkfiles=1"
-    url = baseurl + api_info
-    response = requests.get(url, headers=headers)
+    url = baseurl + "/playlists/" + identifier + "?checkfiles=1"
+    response = _request('GET', url, headers=headers)
+    return response.json()
 
-    # Pretty-print the JSON data
-    data = response.json()
-    #print(json.dumps(data, indent=4))
-    return data
 
 #-------- Get List of Songs in the Playlist
 def get_playlist_contents(identifier):
     baseurl, token, headers = get_globals()
-    api_info = '/playlists/' + identifier + '/items?checkfiles=1'
-    url = baseurl + api_info
-    response = requests.get(url, headers=headers)
+    url = baseurl + '/playlists/' + identifier + '/items?checkfiles=1'
+    response = _request('GET', url, headers=headers)
+    return response.json()
 
-    # Pretty-print the JSON data
-    data = response.json()
-    #print(json.dumps(data, indent=4))
-    return data
 
-#-------- Add a song to a playlist (use the Track "ratingKey" from the XML of the song you want to add as the track identifier)
+#-------- Add a song to a playlist
 def add_song_to_playlist(machine_ID, playlist, song):
     baseurl, token, headers = get_globals()
-    api_info = "/playlists/" + playlist + "/items?uri=server://" + machine_ID + "/com.plexapp.plugins.library/library/metadata/" + song
-    url = baseurl + api_info
-    response = requests.put(url, headers=headers)           # returns playlist metadata
-    data = get_playlist_contents(playlist)                  # returns playlist content in JSON format
-    # Pretty-print the JSON data
-    #print(json.dumps(data, indent=4))
-    return data
+    url = (baseurl + "/playlists/" + playlist + "/items?uri=server://" +
+           machine_ID + "/com.plexapp.plugins.library/library/metadata/" + song)
+    _request('PUT', url, headers=headers)
+    return get_playlist_contents(playlist)
 
-#----------  Search for a particular song in the library and return the ratingKey
+
+#----------  Search for a particular song in the library — returns ratingKey or None
 def search_for_song(library, artist, album, song):
     baseurl, token, headers = get_globals()
-    api_info = "/library/sections/" + library + "/search?type=10&query=" + song
-    url = baseurl + api_info
-    response = requests.get(url, headers=headers)  # returns playlist metadata
-
-    # Pretty-print the JSON data
+    url = baseurl + "/library/sections/" + library + "/search"
+    response = _request('GET', url, headers=headers,
+                        params={'type': 10, 'query': song})
     data = response.json()
-    #print(json.dumps(data, indent=4))
-    data = data["MediaContainer"]["Metadata"]
-    for item in data:
-        if item["parentTitle"] == album and item["grandparentTitle"] == artist :
+    metadata = data.get("MediaContainer", {}).get("Metadata") or []
+    for item in metadata:
+        if item.get("parentTitle") == album and item.get("grandparentTitle") == artist:
             return item["ratingKey"]
-    return response
+    return None
 
-#-------------- Get the metadata for a particular library
+
+#-------------- Get the metadata for a particular library (returns XML via xmltodict)
 def get_library_metadata(library_id):
     baseurl, token, headers = get_globals()
-    headers2 = {
-        'X-Plex-Token': token,
-        'Accept': 'application/xml'  # This header tells Plex to return XML
-    }
-    api_info = "/library/sections/" + library_id + "/all"
-    url = baseurl + api_info
-    response = requests.get(url, headers=headers2)           # returns section metadata
-    data = xmltodict.parse(response.text)                   # returning XML provides a number of XML tags that response.json leaves out
-    # Pretty-print the JSON data
-    #data = response.json()
-    #rint(json.dumps(data, indent=4))
-    return data
+    xml_headers = {'X-Plex-Token': globals.PLEX_TOKEN, 'Accept': 'application/xml'}
+    url = baseurl + "/library/sections/" + library_id + "/all"
+    response = _request('GET', url, headers=xml_headers)
+    return xmltodict.parse(response.text)
+
 
 #-------------  Get music track metadata with a start track index and number of tracks
 def get_metadata(library, content_type, start, number):
     baseurl, token, headers = get_globals()
-    api_info = "/library/sections/" + library + "/all?type=" + str(content_type) + "&X-Plex-Container-Start=" + str(start) + "&X-Plex-Container-Size=" + str(number)
-    url = baseurl + api_info
-    response = requests.get(url, headers=headers)
-    data = response.json()
-    #print(json.dumps(data, indent=4))
-    return data
+    url = (baseurl + "/library/sections/" + library +
+           "/all?type=" + str(content_type) +
+           "&X-Plex-Container-Start=" + str(start) +
+           "&X-Plex-Container-Size=" + str(number))
+    response = _request('GET', url, headers=headers)
+    return response.json()
+
 
 #-------------  Get music track metadata with a start track index and number of tracks
 def get_track_data(library, start, number):
     baseurl, token, headers = get_globals()
-    api_info = "/library/sections/" + library + "/all?type=10&X-Plex-Container-Start=" + str(start) + "&X-Plex-Container-Size=" + str(number)
-    url = baseurl + api_info
-    response = requests.get(url, headers=headers)
+    url = (baseurl + "/library/sections/" + library +
+           "/all?type=10&X-Plex-Container-Start=" + str(start) +
+           "&X-Plex-Container-Size=" + str(number))
+    response = _request('GET', url, headers=headers)
     data = response.json()
-    data = data["MediaContainer"]["Metadata"]
-    #print(json.dumps(data, indent=4))
-    return data
+    return data["MediaContainer"]["Metadata"]
+
 
 #-------------  Delete a playlist whose ratingKey = key
 def delete_playlist(key):
     baseurl, token, headers = get_globals()
-    api_info ="/playlists/" + key
-    url = baseurl + api_info
-    response = requests.delete(url, headers=headers)
+    url = baseurl + "/playlists/" + key
+    _request('DELETE', url, headers=headers)
     return True
 
-#-------------  Create a playlist
+
+#-------------  Create a playlist (name is URL-encoded to handle & # etc.)
 def create_playlist(machine_id, name, library_id):
     baseurl, token, headers = get_globals()
-    api_info = "/playlists?type=audio&title=" + name + "&smart=0&uri=server://" + machine_id + "/com.plexapp.plugins.library/" + library_id
-    url = baseurl + api_info
-    response = requests.post(url, headers=headers)
-    data = response.json()
-    #print(json.dumps(data, indent=4))
-    return data
+    encoded_name = urllib.parse.quote(name, safe='')
+    url = (baseurl + "/playlists?type=audio&title=" + encoded_name +
+           "&smart=0&uri=server://" + machine_id +
+           "/com.plexapp.plugins.library/" + library_id)
+    response = _request('POST', url, headers=headers)
+    return response.json()
+
 
 #----------------- Add a list of songs to a playlist
 def add_songs_to_Plex_playlist(machine_ID, playlist_id, song_list):
     baseurl, token, headers = get_globals()
     song_count = len(song_list)
-    print('Number of songs to import:', str(song_count))
+    logger.info("Importing %d songs to playlist", song_count)
     number_of_tracks_to_add = 50
-    track_count = 0
     list_count = 0
     songs = ""
     for track_count in range(song_count):
         list_count += 1
-        songs = songs + str((song_list[track_count]))
+        songs = songs + str(song_list[track_count])
         if list_count == number_of_tracks_to_add:
-            api_info = "/playlists/" + playlist_id + "/items?uri=server://" + machine_ID + "/com.plexapp.plugins.library/library/metadata/" + songs
-            url = baseurl + api_info
-            response = requests.put(url, headers=headers)  # returns playlist metadata
+            url = (baseurl + "/playlists/" + playlist_id +
+                   "/items?uri=server://" + machine_ID +
+                   "/com.plexapp.plugins.library/library/metadata/" + songs)
+            _request('PUT', url, headers=headers)
             list_count = 0
-            print(track_count+1)
+            logger.debug("Batch progress: %d tracks sent", track_count + 1)
             songs = ""
             continue
         songs = songs + ","
-    # send the last remaining songs in the list
+    # Send the last batch
     if list_count > 0:
-        api_info = "/playlists/" + playlist_id + "/items?uri=server://" + machine_ID + "/com.plexapp.plugins.library/library/metadata/" + songs[:-1]
-        url = baseurl + api_info
-        response = requests.put(url, headers=headers)  # returns playlist metadata
-        print(track_count+1)
+        url = (baseurl + "/playlists/" + playlist_id +
+               "/items?uri=server://" + machine_ID +
+               "/com.plexapp.plugins.library/library/metadata/" + songs[:-1])
+        _request('PUT', url, headers=headers)
+        logger.debug("Batch progress: %d tracks sent", track_count + 1)
 
-    data = get_playlist_contents(playlist_id)                     # returns playlist content in JSON format
+    data = get_playlist_contents(playlist_id)
     return_size = data['MediaContainer']['size']
     if return_size == song_count:
-        print("Successfully added songs to playlist!")
+        logger.info("Successfully added songs to playlist")
     else:
-        print("Failed to add songs to playlist!")
+        logger.warning("Failed to add all songs to playlist")
 
     return song_count, return_size
 
-#--------------  Get the metadata of an item
+
+#--------------  Get the metadata of an item (XML via xmltodict)
 def get_item_metadata(identifier):
-    # The requests JSON parser eliminates some relevant XML tags, so I am requesting the XML and then using xmltodict to parse it
     baseurl, token, headers = get_globals()
-    headers2 = {
-        'X-Plex-Token': token,
-        'Accept': 'application/xml'  # This header tells Plex to return XML
-    }
-    api_info = "/library/metadata/" + str(identifier) + "/children/"        # adding children returns the metadata for all the items that may be in the identifier
-    url = baseurl + api_info
-    response = requests.get(url, headers=headers2)
-    #print(response.text)                        # print out the XML data
-    data = xmltodict.parse(response.text)       # parse using xmltodict
-    #print(json.dumps(data, indent=4))
-    return data
+    xml_headers = {'X-Plex-Token': globals.PLEX_TOKEN, 'Accept': 'application/xml'}
+    url = baseurl + "/library/metadata/" + str(identifier) + "/children/"
+    response = _request('GET', url, headers=xml_headers)
+    return xmltodict.parse(response.text)
