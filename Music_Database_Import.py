@@ -36,7 +36,7 @@ def _open_m3u(path):
         return f.read().splitlines()
 
 
-def save_music_database(app, libray_name, library_id, song_count, output_file_path=None):
+def save_music_database(app, library_name, library_id, song_count, output_file_path=None):
     """Build the Plex music database at %LOCALAPPDATA%\\iTunesToPlex\\Plex Music Database.txt.
 
     Writes to a .tmp file and os.replace()s on success so an interrupted build
@@ -65,7 +65,7 @@ def save_music_database(app, libray_name, library_id, song_count, output_file_pa
 
             first_track = first_batch[0]
             first_path = first_track['Media'][0]['Part'][0]['file']
-            position = first_path.find(libray_name + "/") + len(libray_name) + 1
+            position = first_path.find(library_name + "/") + len(library_name) + 1
             common_path = first_path[:position]
             out.write("The Plex path for Music is: " + common_path + "\n")
 

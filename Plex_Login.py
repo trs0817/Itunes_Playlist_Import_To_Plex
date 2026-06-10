@@ -29,8 +29,10 @@ def get_plex_token(user, pw, id):
 
     plex_response = requests.post('https://plex.tv/users/sign_in.json', headers=plex_tv_headers, data=data)
     #print(response.text)
+    if plex_response.status_code == 401:
+        raise PermissionError("Plex.tv returned 401 — invalid credentials or 2FA account")
     if plex_response.status_code != 201:
-        raise Exception(f"Authentication failed: {plex_response.text}")
+        raise ConnectionError(f"Plex.tv returned unexpected status {plex_response.status_code}")
 
     return plex_response.json()['user']['authToken']
 
@@ -56,8 +58,18 @@ def plex_login(app, username, password):
                 "Server access token received from Plex.tv.  Adding it to Method 2 as a convenience.", "info")
             app.update_token(globals.PLEX_TOKEN)        # Enter the received token into the Method 2 section as a convenience
 
+    except PermissionError:
+        app.post_to_status_console(
+            "Invalid Plex.tv username or password.  "
+            "If your account has two-factor authentication (2FA) enabled, "
+            "this login method does not support it — use Method 2 with a "
+            "token from plex.tv/claim instead.", "error")
+        return False
+    except (ConnectionError, requests.exceptions.RequestException) as e:
+        app.post_to_status_console(f"Could not reach Plex.tv: {e}", "error")
+        return False
     except Exception as e:
-        #print("Login failed. Please check your credentials and try again.")
+        app.post_to_status_console(f"Login error: {e}", "error")
         return False
 # Now ask Plex.tv for server information
     plex_server_info_url = "https://plex.tv/api/v2/resources?includeHttps=0&includeRelay=0&includeIPv6=0"

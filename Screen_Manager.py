@@ -5,6 +5,7 @@
 # LICENSE file in the root directory of this source tree.
 
 import os
+import re
 import threading
 from pathlib import Path
 import tkinter as tk
@@ -16,6 +17,7 @@ from API_Calls import get_playlists, PlexConnectionError
 from Plex_Login import plex_login, ip_login
 import globals
 import logging
+from utils import resource_path
 
 logger = logging.getLogger(__name__)
 _LOG_FOR_TAG = {"info": logger.info, "warning": logger.warning,
@@ -25,6 +27,12 @@ _LOG_FOR_TAG = {"info": logger.info, "warning": logger.warning,
 class PlexImportUtility(tk.Tk):
     def __init__(self):
         super().__init__()
+
+        # Set window/taskbar icon — works from source and when frozen by PyInstaller
+        try:
+            self.iconbitmap(resource_path("icon.ico"))
+        except Exception as e:
+            logging.getLogger(__name__).warning("Could not set window icon: %s", e)
 
         # variable declarations
         self.library_count_lb = None
@@ -54,6 +62,8 @@ class PlexImportUtility(tk.Tk):
         self.selected_library = None   # StringVar bound to the library picker Combobox
         self.library_combo = None
         self.token = None
+        self.plex_port_default_text = None
+        self.plex_port = None
         self.playlist_frame = None
         self.top = None
         self.label = None
@@ -114,6 +124,9 @@ class PlexImportUtility(tk.Tk):
         # Clean shutdown handler — warns if a worker thread is running
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
+        # Lock the minimum window size to whatever the layout requests
+        self.after(1, lambda: self.minsize(self.winfo_reqwidth(), self.winfo_reqheight()))
+
         return
 
     # -------------------------------------------------------------------------
@@ -153,6 +166,37 @@ class PlexImportUtility(tk.Tk):
         else:
             entry.config(show='*')
             button.config(text='Show')
+
+    def _start_ip_login(self):
+        """Validate IP and token on the main thread before starting the login thread.
+        Also updates globals.PLEX_PORT from the port field."""
+        # Treat placeholder values as empty
+        ip = "" if getattr(self.IP_address, '_is_placeholder', False) else self.IP_address.get().strip()
+        token = "" if getattr(self.token, '_is_placeholder', False) else self.token_default_text.get().strip()
+
+        if not _is_valid_ipv4(ip):
+            self.IP_address.config(
+                highlightbackground="red", highlightthickness=2, highlightcolor="red")
+            self.post_to_status_console(
+                "Enter a valid IPv4 address (e.g. 192.168.1.100).", "error")
+            return
+        self.IP_address.config(highlightthickness=0)
+
+        if len(token) < 10:
+            self.post_to_status_console(
+                "Enter your Plex token (Settings \u203a Account on plex.tv).", "error")
+            return
+
+        # Update port from field before connecting
+        port_str = self.plex_port_default_text.get().strip() if self.plex_port_default_text else "32400"
+        try:
+            globals.PLEX_PORT = int(port_str) if port_str else 32400
+        except ValueError:
+            globals.PLEX_PORT = 32400
+
+        self._run_in_thread(
+            ip_login_process, self, ip, token,
+            buttons=[self.login_button_1, self.login_button_2])
 
     def _start_import_with_check(self):
         """Check for overwrite conflicts on the main thread, then start import thread."""
@@ -276,33 +320,38 @@ class PlexImportUtility(tk.Tk):
         self.IP_default_text = tk.StringVar(value="")
         self.IP_address = tk.Entry(self.direct_connect_frame, textvariable=self.IP_default_text, width=40)
         self.IP_address.grid(row=1, column=1, padx=(42, 0), pady=(0, 0), sticky='w')
+        _add_placeholder(self.IP_address, self.IP_default_text, "192.168.1.100")
 
         tk.Label(self.direct_connect_frame, text='Plex Token:', bg='lightblue').grid(row=2, column=0, sticky='w')
         self.token_default_text = tk.StringVar(value="")
         tok_frame = tk.Frame(self.direct_connect_frame, bg='lightblue')
         tok_frame.grid(row=2, column=1, padx=(42, 0), pady=(0, 0), sticky='w')
-        self.token = tk.Entry(tok_frame, textvariable=self.token_default_text, width=37, show="*")
+        self.token = tk.Entry(tok_frame, textvariable=self.token_default_text, width=37, show="")
         self.token.pack(side=tk.LEFT)
         tok_toggle = tk.Button(tok_frame, text="Show", width=5,
                                command=lambda: self._toggle_visibility(self.token, tok_toggle))
         tok_toggle.pack(side=tk.LEFT, padx=(4, 0))
+        _add_placeholder(self.token, self.token_default_text, "Plex token", masked=True)
 
         self.login_button_2 = tk.Button(
             self.direct_connect_frame, text="Login",
-            command=lambda: self._run_in_thread(
-                ip_login_process, self,
-                self.IP_address.get(), self.token.get(),
-                buttons=[self.login_button_1, self.login_button_2]
-            )
+            command=lambda: self._start_ip_login()
         )
-        self.login_button_2.grid(row=3, column=1, padx=(42, 0), pady=(0, 0), sticky='w')
+        self.login_button_2.grid(row=3, column=1, padx=(42, 0), pady=(4, 0), sticky='w')
+
+        tk.Label(self.direct_connect_frame, text='Plex Port:', bg='lightblue').grid(row=4, column=0, sticky='w', pady=(0, 4))
+        vcmd2 = (self.register(self.validate_digits), '%P')
+        self.plex_port_default_text = tk.StringVar(value="32400")
+        self.plex_port = tk.Entry(self.direct_connect_frame, textvariable=self.plex_port_default_text,
+                                   width=8, validate='key', validatecommand=vcmd2)
+        self.plex_port.grid(row=4, column=1, padx=(42, 0), pady=(0, 4), sticky='w')
 
         tk.Label(self.direct_connect_frame,
                  text='Note: One way to find these values is to log onto your Plex server, select a playlist, click on Get Info for a song in the playlist, then click View XML. '
                       'The IP address is the beginning of the URL, and the token is the last value in the URL after X-Plex-Token.  Copy the token into the token field, and enter '
                       'the IP address in xxx.xxx.xxx.xxx format.',
                  bg='lightblue', justify='left', font=('Arial', 10, 'italic'), wraplength=300).grid(
-            row=1, column=2, padx=(10, 0), pady=(0, 10), sticky='ne', rowspan=4, columnspan=1)
+            row=1, column=2, padx=(10, 0), pady=(0, 10), sticky='ne', rowspan=5, columnspan=1)
         return
 
     def validate_digits(self, value):
@@ -510,12 +559,16 @@ class PlexImportUtility(tk.Tk):
             self.progress = None
 
     def update_token(self, token):
+        """Set the token field from code (bypasses placeholder)."""
         self.token_default_text.set(token)
-        return
+        self.token.config(fg="black", show="*")
+        self.token._is_placeholder = False
 
     def update_ip(self, ip):
+        """Set the IP field from code (bypasses placeholder)."""
         self.IP_default_text.set(ip)
-        return
+        self.IP_address.config(fg="black")
+        self.IP_address._is_placeholder = False
 
     def populate_library_picker(self, section_info):
         """Populate the Target Music Library combobox from section_info after login.
@@ -534,6 +587,43 @@ class PlexImportUtility(tk.Tk):
             self.selected_library.set(default)
 
 #   CLASS DEFINITION ENDS HERE
+
+
+def _add_placeholder(entry, string_var, placeholder: str, masked: bool = False):
+    """Bind lightweight placeholder behaviour to an Entry widget.
+
+    When the field is empty and unfocused, it shows `placeholder` in grey.
+    On focus-in the placeholder is cleared and the entry is ready for input.
+    For masked fields (token), show='' during placeholder, show='*' while typing.
+    Sets entry._is_placeholder = True/False so callers can detect the state.
+    """
+    string_var.set(placeholder)
+    entry.config(fg="grey")
+    entry._is_placeholder = True
+
+    def _focus_in(event):
+        if entry._is_placeholder:
+            string_var.set("")
+            entry.config(fg="black")
+            if masked:
+                entry.config(show="*")
+            entry._is_placeholder = False
+
+    def _focus_out(event):
+        if not string_var.get():
+            if masked:
+                entry.config(show="")
+            string_var.set(placeholder)
+            entry.config(fg="grey")
+            entry._is_placeholder = True
+
+    entry.bind("<FocusIn>", _focus_in)
+    entry.bind("<FocusOut>", _focus_out)
+
+def _is_valid_ipv4(ip: str) -> bool:
+    """Return True if ip is a syntactically valid IPv4 address (each octet 0-255)."""
+    m = re.fullmatch(r'(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})', ip)
+    return bool(m) and all(0 <= int(g) <= 255 for g in m.groups())
 
 # this is the main startup process.  Stay here until a successful login and then update the info and playlist screens
 def ip_login_process(scr_root, ip, token):

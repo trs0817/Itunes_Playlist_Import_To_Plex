@@ -49,9 +49,7 @@ def count_photos_in_metadata(metadata):
     if isinstance(photo_metadata, dict):  # If only one photo, it comes back as a dictionary, not a list
         photo_metadata = [photo_metadata]  # Convert to a list
     for item in photo_metadata:
-        #print(json.dumps(item, indent=4))
         count += 1
-        #print(count)
     return count
 
 def get_directories_in_metadata(metadata):
@@ -59,26 +57,20 @@ def get_directories_in_metadata(metadata):
     directory_metadata = metadata.get('Directory', [])
     if isinstance(directory_metadata, dict):
         directory_metadata = [directory_metadata]
-    #print(json.dumps(directory_metadata, indent=4))
     for item in directory_metadata:
         directories.append(item['@ratingKey'])
     return directories
 
 def library_regression(app, directory_list):
-        global regression_loop_count, photo_count
+        global photo_count
         for item in directory_list:
             item_metadata = API_Calls.get_item_metadata(item)['MediaContainer']
-            #print(json.dumps(item_metadata, indent=4))
             photo_count += count_photos_in_metadata(item_metadata)
             logger.debug("Photo count: %s", photo_count)
             app.update_indeterminate_progressbar()
             next_directory_list = get_directories_in_metadata(item_metadata)
             if next_directory_list:
                 library_regression(app, next_directory_list)
-                #regression_loop_count += 1
-                #print(regression_loop_count)
-                #if regression_loop_count > 200:
-                    #exit('Running away....')
         return photo_count
 
 def get_photo_library_count(app, key):
@@ -94,14 +86,8 @@ def get_photo_library_count(app, key):
     app.create_progressbar("Counting Photos, This May Take Some Time....", "indeterminate")
 
     photo_count = library_regression(app, directory_list)
-    #print(directory_list)
     app.post_to_status_console(f"Photo Count Completed.", "success")
     app.close_progressbar()
-    """
-    while directory_list:
-        directory_key = directory_list.pop()
-        directory_metadata = API_Calls.get_item_metadata(directory_key)
-    """
     return photo_count
 
 def get_plex_information(app, count_photos):
