@@ -242,9 +242,15 @@ def display_missing_songs(app, playlist_key, playlist_keys):
     logger.warning("Some songs were not accepted by Plex")
     playlist_contents = API_Calls.get_playlist_contents(playlist_key)
     playlist_contents = playlist_contents['MediaContainer']['Metadata']
+    # playlist_keys contains integers; Plex API returns ratingKey as string.
+    accepted_keys = set(playlist_keys)
     for song in playlist_contents:
-        if song['ratingKey'] not in playlist_keys:
-            app.post_to_status_console(f"{song['title']} + not accepted by Plex", "error")
+        try:
+            rk = int(song['ratingKey'])
+        except (ValueError, KeyError):
+            continue
+        if rk not in accepted_keys:
+            app.post_to_status_console(f"{song['title']} was not in our expected track list", "warning")
     return
 
 

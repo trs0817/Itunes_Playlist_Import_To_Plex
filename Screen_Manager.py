@@ -204,7 +204,7 @@ class PlexImportUtility(tk.Tk):
         if not selected_indices:
             # No selection — let get_playlists_to_import post the error
             self._run_in_thread(get_playlists_to_import, self, self.m3u_folder,
-                                buttons=[self.import_button])
+                                buttons=[self.import_button, self.rebuild_db_button])
             return
 
         selected_files = [self.m3u_lb.get(i) for i in selected_indices]
@@ -222,7 +222,7 @@ class PlexImportUtility(tk.Tk):
                 return
 
         self._run_in_thread(get_playlists_to_import, self, self.m3u_folder,
-                            buttons=[self.import_button])
+                            buttons=[self.import_button, self.rebuild_db_button])
 
     def _on_close(self):
         if self._worker_thread and self._worker_thread.is_alive():
@@ -447,7 +447,7 @@ class PlexImportUtility(tk.Tk):
             self.playlist_frame, text="Rebuild Music Database",
             command=lambda: self._run_in_thread(
                 rebuild_plex_database, self,
-                buttons=[self.rebuild_db_button]
+                buttons=[self.rebuild_db_button, self.import_button]
             )
         )
         self.rebuild_db_button.grid(row=4, column=0, sticky='w', padx=(0, 5), pady=(4, 0))
